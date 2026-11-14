@@ -96,19 +96,23 @@ alongside RMSE, MAE, and exact 4-regime match rate (`regime_match_pct`).
 ## 5. Safe Fallback & Multi-Source Consensus Equations
 
 1. **Independent Secondary NWP Safe Fallback (`degraded_fallback`):**
-   [era5_updater.py](../borssele-digital-twin/backend/app/era5_updater.py) concurrently polls **MET Norway Locationforecast (`api.met.no`)** (extrapolated from `10 m` to `100 m` using `POWER_LAW_OFFSHORE_ALPHA = 0.11`) and **DWD ICON-Seamless (`icon_seamless`)** to attach `secondary_nwp_ws100`. [main.py](../borssele-digital-twin/backend/main.py) computes:
+   [era5_updater.py](../borssele-digital-twin/backend/app/era5_updater.py) concurrently polls **MET Norway Locationforecast (`api.met.no`)** (extrapolated from `10 m` to `100 m` using `POWER_LAW_OFFSHORE_ALPHA = 0.11`) and **DWD ICON-Seamless (`icon_seamless`)** to attach `secondary_nwp_ws100`. [main.py](../borssele-digital-twin/backend/main.py) uses `secondary_nwp_ws100` directly when available, and otherwise blends `synoptic_nwp_ws_h` with `t0` persistence:
 
 $$
-\widehat{W}_{\text{NWP, sec}}(t+h) = 0.80\,\text{secondary\_nwp\_ws}_h + 0.20\,W_{100}(t)
+\widehat{W}_{\text{NWP, sec}}(t+h) =
+\begin{cases}
+\text{secondary\_nwp\_ws100}(t+h) & \text{if } \text{secondary\_nwp\_ws100}(t+h) \text{ is available,} \\[4pt]
+0.80\,\text{synoptic\_nwp\_ws}_h(t) + 0.20\,W_{100}(t) & \text{otherwise (offline / secondary outage).}
+\end{cases}
 $$
 
-   When $\max(\widehat{W}_{\text{NWP, sec}}, \widehat{W}_{\text{ens}}) \ge 20.0\text{ m/s}$, `pred_fallback` adopts the conservative upper envelope $\max(\widehat{W}_{\text{NWP, sec}}, \widehat{W}_{\text{ens}})$ to protect turbine infrastructure and grid balance.
+   When $\max(\widehat{W}_{\text{NWP, sec}}, \widehat{W}_{\text{ens}}) \ge 20.0\text{ m/s}$, `pred_fallback` adopts the conservative upper envelope $\max(\widehat{W}_{\text{NWP, sec}}, \widehat{W}_{\text{ens}})$ to protect turbine infrastructure and grid balance; otherwise it tracks $\widehat{W}_{\text{NWP, sec}}$.
 
-2. **Multi-Source Consensus Gate (`CONSENSUS_THRESHOLD_MS = 2.0 m/s`):**
-   At each forecast step $h$, inter-source spread $S_h$ and consensus confidence $C_h$ across `pred_v2`, `pred_v1`, and `nwp_secondary` are:
+2. **Multi-Source Consensus & Agreement Gate (`MIN_CONSENSUS_AGREEMENT_PCT = 70.0%`):**
+   At each forecast step $h$, inter-source spread $S_h$ across `pred_v2`, `pred_v1`, and `nwp_secondary` and continuous consensus confidence $C_h$ relative to the primary ensemble reference $\widehat{W}_{\text{ens}}$ are:
 
 $$
-S_h = \max\!\left(\widehat{W}_{v2}, \widehat{W}_{v1}, \widehat{W}_{\text{NWP, sec}}\right) - \min\!\left(\widehat{W}_{v2}, \widehat{W}_{v1}, \widehat{W}_{\text{NWP, sec}}\right), \qquad C_h = \max\!\left(0,\; 1 - \frac{S_h}{\max(\widehat{W}_{\text{active}}, 6.0)}\right)
+S_h = \max\!\left(\widehat{W}_{v2}, \widehat{W}_{v1}, \widehat{W}_{\text{NWP, sec}}\right) - \min\!\left(\widehat{W}_{v2}, \widehat{W}_{v1}, \widehat{W}_{\text{NWP, sec}}\right), \qquad C_h = \max\!\left(0,\; 1 - \frac{S_h}{\max(\widehat{W}_{\text{ens}}, 6.0)}\right)
 $$
 
-   Each hour records `consensus_met = (S_h <= 2.0)`. Automatic fallback (`AUTO_FALLBACK_HIGH_WIND_CONSENSUS_DIVERGENCE`) triggers whenever forecast winds reach $\ge 20.0\text{ m/s}$ with window `consensus_agreement_pct < 70.0%`.
+   Window-level `consensus_agreement_pct` averages $100 \cdot C_h$ across the queried $H$-hour window, while each hourly step also logs `consensus_met = (S_h <= 2.0)` (`CONSENSUS_THRESHOLD_MS = 2.0 m/s`). Automatic fallback (`AUTO_FALLBACK_HIGH_WIND_CONSENSUS_DIVERGENCE`) triggers whenever $\max(\widehat{W}_{\text{ens}}, \widehat{W}_{\text{NWP, sec}}) \ge 20.0\text{ m/s}$ in the window with `consensus_agreement_pct < 70.0%`, and `AUTO_FALLBACK_ML_MODELS_UNAVAILABLE` triggers whenever `(len(MODELS_V2) < 24) or (len(MODELS_V1) == 0)`.

@@ -84,9 +84,9 @@ def train_and_evaluate():
     v1_models = load_lightgbm_models(V1_DIR)
 
     # Chronological splits:
-    # Train: Full Year 2025 (8,760h across all seasons)
+    # Train: < 2026-01-01 (9,096h: Full Year 2025 [8,760h] + Feb 2022 Eunice [168h] + Oct-Nov 2023 Ciaran [168h])
     # Val:   Jan 1, 2026 - Feb 14, 2026 (1,080h winter wind regime)
-    # Test:  Feb 15, 2026 - Jun 30, 2026 (3,240h completely held-out test window)
+    # Test:  Feb 15, 2026 - Jun 30, 2026 (3,240h valid contiguous hours; completely held-out test window)
     V2_DIR.mkdir(parents=True, exist_ok=True)
 
     target_df = pd.DataFrame(
