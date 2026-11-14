@@ -47,7 +47,58 @@ function getDaysInMonth(yearStr, monthStr) {
   return new Date(y, m, 0).getDate();
 }
 
+function getLocalTzLabel() {
+  const offsetHours = -new Date().getTimezoneOffset() / 60;
+  if (offsetHours === 0) return 'UTC';
+  return `UTC${offsetHours > 0 ? `+${offsetHours}` : offsetHours}`;
+}
+
+function parseUtcTimestamp(tsStr) {
+  if (!tsStr || tsStr === 'LIVE' || tsStr === 'CUSTOM') return null;
+  const normalized = tsStr.trim().replace(' ', 'T');
+  const iso = normalized.endsWith('Z') ? normalized : `${normalized}Z`;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function formatParts(d, useUtc) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const year = String(useUtc ? d.getUTCFullYear() : d.getFullYear());
+  const month = pad((useUtc ? d.getUTCMonth() : d.getMonth()) + 1);
+  const day = pad(useUtc ? d.getUTCDate() : d.getDate());
+  const hour = pad(useUtc ? d.getUTCHours() : d.getHours());
+  const minute = pad(useUtc ? d.getUTCMinutes() : d.getMinutes());
+  return { year, month, day, hour, minute };
+}
+
+function formatDisplayTimestamp(tsStr, tzMode, localTzLabel, includeSeconds = false) {
+  const d = parseUtcTimestamp(tsStr);
+  if (!d) return tsStr || '--';
+  const useUtc = tzMode === 'utc';
+  const p = formatParts(d, useUtc);
+  const label = useUtc ? 'UTC' : localTzLabel;
+  return includeSeconds
+    ? `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:00 ${label}`
+    : `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute} ${label}`;
+}
+
+function toUtcTimestampString(yearStr, monthStr, dayStr, hourStr, tzMode) {
+  const y = parseInt(yearStr, 10) || 2026;
+  const m = (parseInt(monthStr, 10) || 1) - 1;
+  const d = parseInt(dayStr, 10) || 1;
+  const h = parseInt(hourStr, 10) || 0;
+  if (tzMode === 'utc') {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${y}-${pad(m + 1)}-${pad(d)} ${pad(h)}:00:00`;
+  }
+  const dt = new Date(y, m, d, h, 0, 0);
+  const p = formatParts(dt, true);
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:00:00`;
+}
+
 export default function BorsseleDigitalTwin() {
+  const localTzLabel = getLocalTzLabel();
+  const [tzMode, setTzMode] = useState('local'); // Default to browser local time (e.g. UTC+2 in Finland)
   const [selectedAreaId, setSelectedAreaId] = useState('borssele');
   const [scenarioId, setScenarioId] = useState('live_normal');
   const [horizonHours, setHorizonHours] = useState(24); // Strictly 1 | 6 | 12 | 24 (max +24h)
@@ -74,10 +125,11 @@ export default function BorsseleDigitalTwin() {
   const [error, setError] = useState(null);
 
   const nowObj = new Date();
-  const curYear = nowObj.getUTCFullYear();
-  const curMonth = nowObj.getUTCMonth() + 1;
-  const curDay = nowObj.getUTCDate();
-  const curHour = nowObj.getUTCHours();
+  const useUtcSelectors = tzMode === 'utc';
+  const curYear = useUtcSelectors ? nowObj.getUTCFullYear() : nowObj.getFullYear();
+  const curMonth = (useUtcSelectors ? nowObj.getUTCMonth() : nowObj.getMonth()) + 1;
+  const curDay = useUtcSelectors ? nowObj.getUTCDate() : nowObj.getDate();
+  const curHour = useUtcSelectors ? nowObj.getUTCHours() : nowObj.getHours();
 
   const availableYears = YEAR_OPTIONS.filter((y) => parseInt(y, 10) <= curYear);
   const clampedYear = String(Math.min(parseInt(selYear, 10) || curYear, curYear));
@@ -98,22 +150,29 @@ export default function BorsseleDigitalTwin() {
   const clampedHour = String(Math.min(parseInt(selHour, 10) || 0, maxAllowedHour)).padStart(2, '0');
 
   const activeScenario = SCENARIO_OPTIONS.find((s) => s.id === scenarioId) || SCENARIO_OPTIONS[0];
-  const pendingCustomTs = `${clampedYear}-${clampedMonth}-${clampedDay} ${clampedHour}:00:00`;
+  const pendingCustomTs = toUtcTimestampString(clampedYear, clampedMonth, clampedDay, clampedHour, tzMode);
 
   const effectiveTimestamp =
     scenarioId === 'custom_datetime'
       ? appliedCustomTs
       : activeScenario.ts;
 
-  const syncSelectorsFromTimestamp = (tsStr) => {
-    if (!tsStr || tsStr === 'LIVE' || tsStr === 'CUSTOM') return;
-    const match = tsStr.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2})/);
-    if (match) {
-      setSelYear(match[1]);
-      setSelMonth(match[2]);
-      setSelDay(match[3]);
-      setSelHour(match[4]);
-      setAppliedCustomTs(`${match[1]}-${match[2]}-${match[3]} ${match[4]}:00:00`);
+  const syncSelectorsFromTimestamp = (tsStr, targetTzMode = tzMode) => {
+    const d = parseUtcTimestamp(tsStr);
+    if (!d) return;
+    const p = formatParts(d, targetTzMode === 'utc');
+    setSelYear(p.year);
+    setSelMonth(p.month);
+    setSelDay(p.day);
+    setSelHour(p.hour);
+    const utcP = formatParts(d, true);
+    setAppliedCustomTs(`${utcP.year}-${utcP.month}-${utcP.day} ${utcP.hour}:00:00`);
+  };
+
+  const handleToggleTzMode = (nextMode) => {
+    setTzMode(nextMode);
+    if (resolvedTimestamp) {
+      syncSelectorsFromTimestamp(resolvedTimestamp, nextMode);
     }
   };
 
@@ -236,11 +295,33 @@ export default function BorsseleDigitalTwin() {
               </h1>
             </div>
 
-            <div className="flex items-center gap-2.5 bg-slate-950/90 border border-slate-800 rounded-xl px-4 py-2.5 text-xs font-mono shrink-0">
+            <div className="flex flex-wrap items-center gap-2.5 bg-slate-950/90 border border-slate-800 rounded-xl px-4 py-2.5 text-xs font-mono shrink-0">
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-cyan-400' : 'text-emerald-400'}`} />
               <span className="text-emerald-400 font-bold">Auto-Sync Active</span>
               <span className="text-slate-500">•</span>
-              <span className="text-slate-300">t₀: {resolvedTimestamp ? `${resolvedTimestamp} UTC` : 'Syncing...'}</span>
+              <span className="text-slate-300">
+                t₀: {resolvedTimestamp ? formatDisplayTimestamp(resolvedTimestamp, tzMode, localTzLabel, true) : 'Syncing...'}
+              </span>
+              <div className="inline-flex rounded-lg border border-slate-700 overflow-hidden ml-1">
+                <button
+                  type="button"
+                  onClick={() => handleToggleTzMode('local')}
+                  className={`px-2 py-0.5 text-[11px] font-bold transition ${
+                    tzMode === 'local' ? 'bg-cyan-500 text-slate-950' : 'bg-slate-900 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {localTzLabel}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleToggleTzMode('utc')}
+                  className={`px-2 py-0.5 text-[11px] font-bold transition ${
+                    tzMode === 'utc' ? 'bg-cyan-500 text-slate-950' : 'bg-slate-900 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  UTC
+                </button>
+              </div>
               {lastAutoRefresh && (
                 <>
                   <span className="text-slate-500">•</span>
@@ -362,7 +443,7 @@ export default function BorsseleDigitalTwin() {
 
               <div className="space-y-1">
                 <label className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                  Hour (UTC • Max Now)
+                  Hour ({tzMode === 'utc' ? 'UTC' : localTzLabel} • Max Now)
                 </label>
                 <select
                   value={clampedHour}
@@ -370,7 +451,7 @@ export default function BorsseleDigitalTwin() {
                   className="w-full bg-slate-950 text-cyan-300 text-xs sm:text-sm font-mono font-semibold px-3 py-2 rounded-xl border border-slate-700 focus:border-cyan-500 focus:outline-none"
                 >
                   {availableHours.map((hr) => (
-                    <option key={hr} value={hr}>{hr}:00 UTC</option>
+                    <option key={hr} value={hr}>{hr}:00 {tzMode === 'utc' ? 'UTC' : localTzLabel}</option>
                   ))}
                 </select>
               </div>
@@ -381,7 +462,7 @@ export default function BorsseleDigitalTwin() {
                 onClick={handleApplyDateClick}
                 className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-mono font-bold text-xs transition shadow"
               >
-                Predict {clampedYear}-{clampedMonth}-{clampedDay} {clampedHour}:00 UTC
+                Predict {clampedYear}-{clampedMonth}-{clampedDay} {clampedHour}:00 {tzMode === 'utc' ? 'UTC' : localTzLabel}
               </button>
               {effectiveTimestamp !== 'LIVE' && (
                 <button
@@ -428,7 +509,7 @@ export default function BorsseleDigitalTwin() {
                     +{h}h {h === 24 ? '• Max Horizon' : 'Forecast'}
                   </span>
                   <span className="text-xs font-mono text-slate-400">
-                    {snap ? snap.timestamp : '--'}
+                    {snap ? formatDisplayTimestamp(snap.timestamp, tzMode, localTzLabel, false) : '--'}
                   </span>
                 </div>
 
@@ -508,6 +589,10 @@ export default function BorsseleDigitalTwin() {
                     <XAxis dataKey="horizon" stroke="#64748b" fontSize={11} />
                     <YAxis stroke="#64748b" fontSize={11} unit=" m/s" domain={[0, 35]} />
                     <Tooltip
+                      labelFormatter={(label, payload) => {
+                        const ts = payload?.[0]?.payload?.timestamp;
+                        return ts ? `${label} • ${formatDisplayTimestamp(ts, tzMode, localTzLabel, false)}` : label;
+                      }}
                       contentStyle={{
                         backgroundColor: '#0f172a',
                         borderColor: '#334155',
