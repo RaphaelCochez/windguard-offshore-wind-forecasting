@@ -404,6 +404,7 @@ def get_prediction(req: ForecastRequest):
         source_spread = float(
             max(pred_v2, pred_v1, nwp_secondary) - min(pred_v2, pred_v1, nwp_secondary)
         )
+        consensus_score_h = float(max(0.0, 1.0 - (source_spread / max(pred_ens, 6.0))))
         raw_24h.append({
             "step": h,
             "horizon": f"+{h}h",
@@ -416,6 +417,7 @@ def get_prediction(req: ForecastRequest):
             "nwp_secondary": nwp_secondary,
             "ref_ws": ref_ws,
             "source_spread": source_spread,
+            "consensus_score_h": consensus_score_h,
         })
 
     # Automatic Safe Fallback Detection (per Box 9: Failure and Safe Fallback)
@@ -423,11 +425,7 @@ def get_prediction(req: ForecastRequest):
     primary_stream_lost = is_live_mode and not bool(sync_meta.get("primary_sync_ok", True))
 
     prelim_window = raw_24h[:horizon_hours]
-    prelim_scores = [
-        max(0.0, 1.0 - (r["source_spread"] / max(r["pred_ens"], 6.0))) * 100.0
-        for r in prelim_window
-    ]
-    prelim_consensus_pct = float(np.mean(prelim_scores))
+    prelim_consensus_pct = float(np.mean([r["consensus_score_h"] * 100.0 for r in prelim_window]))
     high_wind_present = any(
         max(r["pred_ens"], r["nwp_secondary"]) >= CAUTION_SPEED_MS for r in prelim_window
     )
@@ -475,7 +473,7 @@ def get_prediction(req: ForecastRequest):
         else:
             active_pred = r["pred_ens"]
 
-        consensus_score_h = max(0.0, 1.0 - (r["source_spread"] / max(active_pred, 6.0)))
+        consensus_score_h = r["consensus_score_h"]
         consensus_met = bool(r["source_spread"] <= CONSENSUS_THRESHOLD_MS)
 
         op_pred = evaluate_turbine_operability(active_pred)

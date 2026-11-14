@@ -9,7 +9,13 @@ sys.path.insert(0, str(BACKEND_DIR))
 
 import main
 from app.physics_engine import evaluate_turbine_operability
-from app.config import CUT_IN_SPEED_MS, CAUTION_SPEED_MS, CUT_OUT_SPEED_MS, MAX_HORIZON_HOURS
+from app.config import (
+    CUT_IN_SPEED_MS,
+    CAUTION_SPEED_MS,
+    CUT_OUT_SPEED_MS,
+    MAX_HORIZON_HOURS,
+    MIN_CONSENSUS_AGREEMENT_PCT,
+)
 
 
 class TestOperationalService(unittest.TestCase):
@@ -131,6 +137,36 @@ class TestOperationalService(unittest.TestCase):
             self.assertGreaterEqual(res["window_metrics"]["cutout_hours"], 5)
         finally:
             main.MODELS_V2.update(saved_v2)
+
+    def test_consensus_denominator_consistency_on_auto_fallback(self):
+        res_ens = main.get_prediction(
+            main.ForecastRequest(
+                timestamp="2025-01-01 06:00:00",
+                area_id="borssele",
+                horizon_hours=24,
+                mode="ensemble",
+                system_mode="normal",
+            )
+        )
+        res_v1 = main.get_prediction(
+            main.ForecastRequest(
+                timestamp="2025-01-01 06:00:00",
+                area_id="borssele",
+                horizon_hours=24,
+                mode="v1",
+                system_mode="normal",
+            )
+        )
+        pt = res_ens["proposal_telemetry"]
+        self.assertEqual(res_ens["system_mode"], "auto_degraded_fallback")
+        self.assertEqual(pt["fallback_trigger_reason"], "AUTO_FALLBACK_HIGH_WIND_CONSENSUS_DIVERGENCE")
+        self.assertLess(pt["consensus_agreement_pct"], MIN_CONSENSUS_AGREEMENT_PCT)
+        gate_ch = [ch for ch in pt["notification_channels"] if ch["channel"] == "Multi-Source NWP Consensus Gate"][0]
+        self.assertEqual(gate_ch["status"], "REVIEW")
+        self.assertEqual(
+            pt["consensus_agreement_pct"],
+            res_v1["proposal_telemetry"]["consensus_agreement_pct"],
+        )
 
     def test_live_multi_nwp_sync(self):
         res = main.get_prediction(
