@@ -1,0 +1,21 @@
+# Python bytecode & caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Frontend build & dependencies
+node_modules/
+borssele-digital-twin/frontend/node_modules/
+borssele-digital-twin/frontend/dist/
+borssele-digital-twin/backend/static/
+
+# OS / Editor / Local assignment files
+.DS_Store
+*.swp
+Space_Technologies_One-Page_Proposal.pdf
