@@ -147,9 +147,9 @@ The service integrates four constituent components operating across external met
 1. **Constituent System 1 — Copernicus C3S ERA5 Reanalysis Archive:**
    Provides homogeneous hourly atmospheric state vectors over a `0.25° × 0.25°` latitude-longitude grid (`≈ 478 km²` at Borssele). Local Borssele reanalysis is stored in [`borssele-digital-twin/backend/data/df26.csv`](borssele-digital-twin/backend/data/df26.csv), while historical dates or other corridors are fetched on demand via the Open-Meteo ERA5 Archive API (`archive-api.open-meteo.com/v1/era5`) or optionally via Copernicus CDS (`ecmwf-datastores-client` when `CDS_API_KEY` or `~/.ecmwfdatastoresrc` is configured).
 2. **Constituent System 2 — Dual-Stream Operational NWP Feeds (Open-Meteo Primary + MET Norway / DWD ICON Secondary):**
-   The primary stream queries Open-Meteo ECMWF/ERA5-Seamless (`api.open-meteo.com/v1/forecast`) for hourly `wind_speed_100m`, `wind_direction_100m`, `wind_speed_10m`, `wind_direction_10m`, `wind_gusts_10m`, `temperature_2m`, `dew_point_2m`, `pressure_msl`, `surface_pressure`, `cloud_cover`, and `precipitation` (`past_days=4`, `forecast_days=2`), sliced strictly on UTC hour boundaries to `[utc_now_hour - 96h, utc_now_hour + 24h]` and converted into `(u, v)` vectors and SI units (`K`, `Pa`, `0..1`, `m`). In parallel, `_fetch_secondary_nwp_streams` polls **MET Norway Locationforecast (`api.met.no`)** (extrapolating `10 m` wind to `100 m` hub height via the offshore neutral power law `α = 0.11`) and **DWD ICON-Seamless (`icon_seamless`)** to populate an independent `secondary_nwp_ws100` reference series that persists even if the primary feed drops out.
+   The primary stream queries Open-Meteo ECMWF/ERA5-Seamless (`api.open-meteo.com/v1/forecast`) for hourly `wind_speed_100m`, `wind_direction_100m`, `wind_speed_10m`, `wind_direction_10m`, `wind_gusts_10m`, `temperature_2m`, `dew_point_2m`, `pressure_msl`, `surface_pressure`, `cloud_cover`, and `precipitation` (`past_days=5`, `forecast_days=2`), sliced strictly on UTC hour boundaries to `[utc_now_hour - 96h, utc_now_hour + 24h]` and converted into `(u, v)` vectors and SI units (`K`, `Pa`, `0..1`, `m`). In parallel, `_fetch_secondary_nwp_streams` polls **MET Norway Locationforecast (`api.met.no`)** (extrapolating `10 m` wind to `100 m` hub height via the offshore neutral power law `α = 0.11`) and **DWD ICON-Seamless (`icon_seamless`)** to populate an independent `secondary_nwp_ws100` reference series that persists even if the primary feed drops out.
 3. **Constituent System 3 — Backend Forecasting, Auto-Fallback & Operability Engine ([`borssele-digital-twin/backend/`](borssele-digital-twin/backend)):**
-   Runs a FastAPI server whose `_background_era5_sync_loop` refreshes all 5 corridors every `300 s`, extracts up to `49` hourly context rows (`current_idx - 48` through `current_idx`), evaluates all 24 `v1` and `v2` LightGBM boosters, checks multi-source spread against independent `nwp_secondary`, automatically triggers `degraded_fallback` on primary outage, missing `v2` models, or high-wind divergence (`< 70%` consensus at `≥ 20.0 m/s`), and classifies every future hour through [`physics_engine.py`](borssele-digital-twin/backend/app/physics_engine.py).
+   Runs a FastAPI server whose `_background_era5_sync_loop` refreshes all 5 corridors every `300 s`, extracts up to `49` hourly context rows (`current_idx - 48` through `current_idx`), evaluates all 24 `v1` and `v2` LightGBM boosters, checks multi-source spread against independent `nwp_secondary`, automatically triggers `degraded_fallback` on primary outage, missing `v2`/`v1` models, or high-wind divergence (`< 70%` consensus at `≥ 20.0 m/s`), and classifies every future hour through [`physics_engine.py`](borssele-digital-twin/backend/app/physics_engine.py).
 4. **Constituent System 4 — Grid Operator Web Dashboard ([`borssele-digital-twin/frontend/`](borssele-digital-twin/frontend)):**
    A React + Vite + Tailwind + Recharts interface providing corridor selection, horizon switching (`+1h`, `+6h`, `+12h`, `+24h` max), operational mode selection (`Live Now`, `Live Safe Fallback`, the 3 historical North Sea events, or custom UTC `Year / Month / Day / Hour` capped strictly at current `UTC` time), an interactive slippy tile coverage map (OSM / Dark Marine + OpenSeaMap seamarks, `z6`–`z11`) with a pinned 8-point compass rose and `16`-sector bearing badge, a unified forecast & threshold trajectory chart, and a compact Grid Operator Decision & telemetry footer (`Mode`, `Freshness`, `Latency`, `Fallback`).
 
@@ -181,9 +181,11 @@ The collected Borssele ERA5 dataset ([`borssele-digital-twin/backend/data/df26.c
 - `2025-01-01 00:00` – `2026-06-30 23:00` (`13,104` rows, 18 continuous months, min MSLP `973.3 hPa`)
 
 To prevent target leakage across segment boundaries, `train_models.py` enforces a strict `contiguous_24h` filter (requiring all 24 future hourly steps to be contiguous), producing **`13,416` valid origin timestamps** split chronologically:
-- **Training Split (`< 2026-01-01`):** **`9,096`** contiguous hourly samples
+- **Training Split (`< 2026-01-01`):** **`9,096`** contiguous hourly samples (`8,760`h across 2025 + `168`h from Feb 2022 + `168`h from Oct–Nov 2023)
 - **Validation Split (`2026-01-01` to `2026-02-14`):** **`1,080`** contiguous hourly samples
-- **Held-Out Test Split (`2026-02-15` to `2026-06-30`):** **`3,240`** completely unseen hourly samples
+- **Held-Out Test Split (`2026-02-15` to `2026-06-29`):** **`3,240`** completely unseen hourly samples (peaking at `21.70 m/s` on `2026-03-13 03:00`, with `701`h `> 12 m/s` and `0`h `≥ 25 m/s`)
+
+> **Evaluation Scope Note:** Zero rows from `2022`, `2023`, or `2025` enter the `2026` validation or held-out test partitions (all `< 2026-01-01`). During offline backtesting (`is_live_mode=False`), `v2`'s `synoptic_nwp_ws_h` covariate is synthesized from a 4h smoothed-future ERA5 synoptic proxy with deterministic dispersion (`0.26 · √h`), whereas `v1` uses `t₀`-only state/lag features; genuine live NWP cross-validation is separately verified in Section 6.3.
 
 ### Benchmark Across Horizons (Held-Out 2026 Test Set, `N = 3,240h`)
 
@@ -204,13 +206,13 @@ All figures below come directly from [`borssele-digital-twin/backend/models/wind
 
 ### 6.1 Three Historical North Sea Storm Events at Borssele (`51.72°N, 3.00°E`)
 
-All metrics below are measured directly from `POST /api/predict` (`mode="ensemble"`, `horizon_hours=24`) against Copernicus ERA5 ground truth in `df26.csv`:
+Because Events 1–3 predate `2026-01-01`, **all three case studies are in-sample operational replays for `v2`** (and Events 1–2 also fall inside `v1`'s `< 2024-01-01` training window), evaluating cut-out detection and safe-fallback behavior against Copernicus ERA5 truth in `df26.csv` over `+24h`:
 
-| Case Study | Forecast Origin `t₀` (UTC) | Initial Wind `W₁₀₀(t₀)` | Peak ERA5 Truth | Peak `v2` Prediction | ERA5 Shut-Down Duration (`≥ 25 m/s`) | Predicted Shut-Down Duration (`≥ 25 m/s`) | `+24h` Wind Accuracy | `+24h` MAE / RMSE | Operational Decision Assessment |
+| Case Study | Forecast Origin `t₀` (UTC) | Initial Wind `W₁₀₀(t₀)` | Peak ERA5 Truth | Peak `v2` Ensemble Prediction | ERA5 Shut-Down Duration (`≥ 25 m/s`) | Predicted Shut-Down Duration (`≥ 25 m/s`) | `+24h` Wind Accuracy | `+24h` MAE / RMSE | Operational Decision Assessment |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **Event 1: Storm Eunice** *(KNMI Code Red & TenneT Cut-Out)* | `2022-02-18 06:00` | `16.73 m/s` | **`31.31 m/s`** *(16:00 UTC)* | **`30.22 m/s`** *(16:00 UTC)* | **`10h`** *(12:00–21:00 UTC)* | **`9h`** *(12:00–20:00 UTC)* | **`97.9%`** | `0.52 m/s` / **`0.68 m/s`** | **True Positive Shut-Down:** Forecasts exact `12:00 UTC` cut-out onset (`+6h` lead time: `25.32` vs. `25.53 m/s`) and tracks storm peak to within `1.09 m/s`. |
-| **Event 2: Storm Ciarán** *(961.6 hPa Bomb Cyclone Cut-Out)* | `2023-11-02 00:00` | `16.99 m/s` | **`32.56 m/s`** *(12:00 UTC)* | **`30.45 m/s`** *(12:00 UTC)* | **`5h`** *(09:00–13:00 UTC)* | **`6h`** *(10:00–15:00 UTC)* | **`95.2%`** | `1.18 m/s` / **`1.66 m/s`** | **True Positive Shut-Down:** Signals `HIGH WIND CAUTION` (`24.93 m/s`) at `09:00 UTC` and confirms `CUT-OUT SHUT-DOWN` from `10:00–15:00 UTC`. |
-| **Event 3: New Year Severe Gale** *(Near-Threshold Caution Test)* | `2025-01-01 06:00` | `21.94 m/s` | **`24.52 m/s`** *(13:00 UTC)* | **`24.04 m/s`** *(12:00 UTC)* | **`0h`** *(`0.48 m/s` margin)* | **`0h`** *(9h High Wind Caution)* | **`92.6%`** | `1.02 m/s` / **`1.49 m/s`** | **True Negative (Zero False Alarm):** Sustains `HIGH WIND CAUTION (20–25 m/s)` for `9h` (`07:00–15:00 UTC`) without triggering an unnecessary shut-down. |
+| **Event 1: Storm Eunice** *(KNMI Code Red & TenneT Cut-Out)* | `2022-02-18 06:00` | `16.73 m/s` | **`31.31 m/s`** *(16:00 UTC)* | **`30.22 m/s`** *(16:00 UTC)* | **`10h`** *(12:00–21:00 UTC)* | **`9h`** *(12:00–20:00 UTC)* | **`97.9%`** | `0.52 m/s` / **`0.68 m/s`** | **True Positive Shut-Down (`normal`):** Forecasts exact `12:00 UTC` cut-out onset (`+6h` lead time: `25.32` vs. `25.53 m/s`) and tracks storm peak to within `1.09 m/s`. |
+| **Event 2: Storm Ciarán** *(961.6 hPa Bomb Cyclone Cut-Out)* | `2023-11-02 00:00` | `16.99 m/s` | **`32.56 m/s`** *(12:00 UTC)* | **`30.45 m/s`** *(12:00 UTC)* | **`5h`** *(09:00–13:00 UTC)* | **`6h`** *(10:00–15:00 UTC)* | **`95.2%`** | `1.18 m/s` / **`1.66 m/s`** | **True Positive Shut-Down (`normal`):** Signals `HIGH WIND CAUTION` (`24.93 m/s`) at `09:00 UTC` and confirms `CUT-OUT SHUT-DOWN` from `10:00–15:00 UTC`. |
+| **Event 3: New Year Severe Gale** *(Near-Threshold Caution Test)* | `2025-01-01 06:00` | `21.94 m/s` | **`24.52 m/s`** *(13:00 UTC)* | **`24.04 m/s`** *(12:00 UTC)* | **`0h`** *(`0.48 m/s` margin)* | **`0h`** *(High Wind Caution)* | **`92.6%`** *(ens)* / `83.1%` *(auto-fb)* | `1.02` / **`1.49 m/s`** *(ens)*; `3.13` *(auto-fb)* | **True Negative (Zero False Alarm):** Primary ensemble avoids false shut-down across `07:00–15:00 UTC`; runtime `POST /api/predict` triggers `auto_degraded_fallback` on `v1`/`v2` divergence (`66.7% < 70%`). |
 
 ### 6.2 Observed API Timeline: Storm Ciarán (`2023-11-02 00:00 UTC` Origin)
 
@@ -252,18 +254,17 @@ Implemented in [`borssele-digital-twin/backend/main.py`](borssele-digital-twin/b
 
 1. **Independent Secondary NWP Safe Fallback (`degraded_fallback`):**
    - In live mode, `era5_updater.py` concurrently polls **MET Norway Locationforecast (`api.met.no`)** (extrapolated from `10 m` to `100 m` using `POWER_LAW_OFFSHORE_ALPHA = 0.11`) and **DWD ICON-Seamless (`icon_seamless`)** to attach `secondary_nwp_ws100`.
-   - `main.py` computes the independent safe-fallback trajectory from `secondary_nwp_ws100` (when available, otherwise persistence-blended synoptic guidance):
-     `Ŵ_NWP,sec(t+h) = 0.80 · secondary_nwp_ws_h + 0.20 · W₁₀₀(t)`
+   - `main.py` sets `Ŵ_NWP,sec(t+h) = secondary_nwp_ws100(t+h)` directly whenever `secondary_nwp_ws100` is available; otherwise (in offline historical mode or if external secondary NWP is unavailable), it falls back to persistence-blended synoptic guidance `Ŵ_NWP,sec(t+h) = 0.80 · synoptic_nwp_ws_h + 0.20 · W₁₀₀(t)`.
    - When `max(Ŵ_NWP,sec, Ŵ_ens) ≥ 20.0 m/s` (approaching cut-out danger), `pred_fallback` adopts the conservative upper envelope `max(Ŵ_NWP,sec, Ŵ_ens)` to protect turbine infrastructure and grid balance; otherwise it tracks `Ŵ_NWP,sec`.
 2. **Automatic Fallback Activation (`auto_fallback_triggered`):**
    Beyond explicit operator selection (`MANUAL_OPERATOR_SAFE_FALLBACK`), the backend automatically promotes the active prediction stream to `degraded_fallback` whenever any of three runtime safety conditions occur:
    - **`AUTO_FALLBACK_PRIMARY_STREAM_LOSS`:** Live primary Open-Meteo NWP synchronization failed (`primary_sync_ok == False`).
-   - **`AUTO_FALLBACK_ML_MODELS_UNAVAILABLE`:** Required `wind_forecast_v2` horizon models are unavailable in memory.
-   - **`AUTO_FALLBACK_HIGH_WIND_CONSENSUS_DIVERGENCE`:** Forecast peak enters caution/cut-out territory (`≥ 20.0 m/s`) while inter-source `consensus_agreement_pct < 70.0%` (`MIN_CONSENSUS_AGREEMENT_PCT`).
-3. **Multi-Source Consensus Gate (`CONSENSUS_THRESHOLD_MS = 2.0 m/s`):**
-   - At each forecast step `h`, the backend measures inter-source spread across `pred_v2`, `pred_v1`, and `nwp_secondary`:
-     `S_h = max(Ŵ_v2, Ŵ_v1, Ŵ_NWP,sec) − min(Ŵ_v2, Ŵ_v1, Ŵ_NWP,sec)`, `C_h = max(0, 1 − S_h / max(Ŵ_active, 6.0))`
-   - Each hour records `consensus_met = (S_h <= 2.0)`, and window-level `consensus_agreement_pct` plus compact operational telemetry (`Mode`, `Freshness`, `Latency`, `Fallback`) are surfaced directly in the dashboard footer.
+   - **`AUTO_FALLBACK_ML_MODELS_UNAVAILABLE`:** Any required `wind_forecast_v2` horizon booster (`< 24`) or all `wind_forecast_v1` models (`== 0`) are unavailable in memory.
+   - **`AUTO_FALLBACK_HIGH_WIND_CONSENSUS_DIVERGENCE`:** Forecast peak enters caution/cut-out territory (`max(Ŵ_ens, Ŵ_NWP,sec) ≥ 20.0 m/s`) while inter-source `consensus_agreement_pct < 70.0%` (`MIN_CONSENSUS_AGREEMENT_PCT`).
+3. **Multi-Source Consensus & Agreement Gate (`MIN_CONSENSUS_AGREEMENT_PCT = 70.0%`):**
+   - At each forecast step `h`, the backend measures inter-source spread `S_h` across `pred_v2`, `pred_v1`, and `nwp_secondary`, along with continuous agreement score `C_h` normalized by the primary ensemble reference `Ŵ_ens`:
+     `S_h = max(Ŵ_v2, Ŵ_v1, Ŵ_NWP,sec) − min(Ŵ_v2, Ŵ_v1, Ŵ_NWP,sec)`, `C_h = max(0, 1 − S_h / max(Ŵ_ens, 6.0))`
+   - Window-level `consensus_agreement_pct` averages `100 · C_h` across the queried `H`-hour window (and drives the `70.0%` divergence trigger and `PASS`/`REVIEW` gate), while each hourly row also logs the binary spread flag `consensus_met = (S_h <= 2.0)` (`CONSENSUS_THRESHOLD_MS = 2.0 m/s`); compact operational telemetry (`Mode`, `Freshness`, `Latency`, `Fallback`) is surfaced directly in the dashboard footer.
 
 ---
 
