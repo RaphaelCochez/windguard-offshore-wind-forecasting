@@ -4,6 +4,8 @@
 
 [Open the WindGuard dashboard](https://windguard-offshore-wind-forecasting-725881996434.europe-north1.run.app/)
 
+![Snapshot of the UI](images/windguardweb.png)
+
 **Authors:** Raphael Cochez, Pasan Merengnage, Mariia Melnikova  
 
 **Core Research & Operational Question:**  
