@@ -1,5 +1,9 @@
 # WindGuard: Operational Earth Observation Service to Predict Offshore Wind Park Shut-Down Events
 
+## Live Demo
+
+[Open the WindGuard dashboard](https://windguard-offshore-wind-forecasting-725881996434.europe-north1.run.app/)
+
 **Authors:** Raphael Cochez, Pasan Merengnage, Mariia Melnikova  
 
 **Core Research & Operational Question:**  
