@@ -10,8 +10,8 @@ For the project overview, architecture diagram, and Docker quick start, see [REA
 
 An exploratory 10-year Copernicus ERA5 reanalysis study (`2016–2025`) was conducted for the Borssele Offshore Wind Farm (`51.716667°N, 3.000000°E`) in [10_years_Analysis_Borssele_offshore_wind_farm.ipynb](../10_years_Analysis_Borssele_offshore_wind_farm.ipynb):
 
-- **Heavy-Tail Storm Sparsity:** Across the 10-year ERA5 sample, 100 m wind speed quantiles are `10.08 m/s` (50%), `13.73 m/s` (75%), `17.17 m/s` (90%), `19.64 m/s` (95%), and `23.60 m/s` (99%). Days with daily peak $W_{100} > 25.0\text{ m/s}$ occurred only **20 days across 2016–2025** (`2016: 3`, `2017: 2`, `2018: 1`, `2019: 0`, `2020: 5`, `2021: 3`, `2022: 2`, `2023: 1`, `2024: 3`, `2025: 0`).
-- **Seasonal Regime Clustering & Lag Autocorrelation:** Extreme winds cluster in late autumn through early spring (Nov–Apr) and exhibit strong short-term autocorrelation (`1h–24h` lags) that decays at multi-day lead times—explaining why standard uniform MSE tree regression regresses storm peaks toward the seasonal mean.
+- **Heavy-Tail Storm Sparsity (`2016–2025`):** Across the 10-year ERA5 dataset (`2016–2025`), days with daily peak $W_{100} > 25.0\text{ m/s}$ occurred only **20 days** (`2016: 3`, `2017: 2`, `2018: 1`, `2019: 0`, `2020: 5`, `2021: 3`, `2022: 2`, `2023: 1`, `2024: 3`, `2025: 0`), clustered in late autumn through early spring (`Nov–Dec` and `Jan–Apr`).
+- **Winter Wind Quantiles & Lag Autocorrelation (`2,160h` Subset):** Across the notebook's `2,160`-hour (`90`-day, `Jan–Mar 2022`) exploratory winter subset (`max 32.36 m/s`), 100 m wind speed quantiles are `10.08 m/s` (50%), `13.73 m/s` (75%), `17.17 m/s` (90%), `19.64 m/s` (95%), and `23.60 m/s` (99%), with lag autocorrelation decaying from `0.9851` (`1h`), `0.8236` (`6h`), and `0.6394` (`12h`) to `0.4539` (`24h`) and `0.1066` (`168h`)—explaining why standard uniform MSE tree regression regresses storm peaks toward the seasonal mean.
 
 ---
 
@@ -60,7 +60,7 @@ $$
 
 ## 3. Physics-Informed Residual LightGBM (`wind_forecast_v2`)
 
-Direct tree regression (`wind_forecast_v1`) trained solely on state features at $t_0$ suffers from regression-to-the-mean leaf clipping and objective/early-stopping mismatch (`-4.223 m/s` high-wind bias at `+24h`). [train_models.py](../borssele-digital-twin/backend/train_models.py) resolves both issues in three steps:
+Direct tree regression (`wind_forecast_v1`) trained solely on state features at $t_0$ suffers from regression-to-the-mean leaf clipping and objective/early-stopping mismatch (`-4.505 m/s` high-wind bias at `+24h`). [train_models.py](../borssele-digital-twin/backend/train_models.py) resolves both issues in three steps:
 
 1. **Physical Persistence-to-Synoptic Baseline Blend:**
    For each horizon $h \in \{1,\dots,24\}$, a baseline trajectory $y_{\text{base}, h}(t)$ transitions smoothly from initial persistence $W_{100}(t)$ at `+1h` ($\alpha_1 \approx 0.455$) to synoptic NWP guidance $\text{synoptic\_nwp\_ws}_h$ at `+24h` ($\alpha_{24} = 0.920$):
@@ -77,7 +77,7 @@ $$
 $$
 
 3. **Optimal Validation Ensemble Calibration:**
-   Validation predictions $\widehat{W}_h^{(v2)} = \max(0, y_{\text{base}, h} + \hat{\delta}_h)$ are blended with $\widehat{W}_h^{(v1)}$ via grid search over $w_{v2, h} \in [0.50, 1.00]$, yielding calibrated weights $w_{v2, h} \in [0.900, 1.000]$ across the 24 horizons.
+   Validation predictions $\widehat{W}_h^{(v2)} = \max(0, y_{\text{base}, h} + \hat{\delta}_h)$ are blended with $\widehat{W}_h^{(v1)}$ via grid search over $w_{v2, h} \in [0.50, 1.00]$, yielding calibrated weights $w_{v2, h} \in [0.925, 1.000]$ across the 24 horizons.
 
 ---
 
@@ -96,13 +96,13 @@ alongside RMSE, MAE, and exact 4-regime match rate (`regime_match_pct`).
 ## 5. Safe Fallback & Multi-Source Consensus Equations
 
 1. **Independent Secondary NWP Safe Fallback (`degraded_fallback`):**
-   [era5_updater.py](../borssele-digital-twin/backend/app/era5_updater.py) concurrently polls **MET Norway Locationforecast (`api.met.no`)** (extrapolated from `10 m` to `100 m` using `POWER_LAW_OFFSHORE_ALPHA = 0.11`) and **DWD ICON-Seamless (`icon_seamless`)** to attach `secondary_nwp_ws100`. [main.py](../borssele-digital-twin/backend/main.py) uses `secondary_nwp_ws100` directly when available, and otherwise blends `synoptic_nwp_ws_h` with `t0` persistence:
+   [era5_updater.py](../borssele-digital-twin/backend/app/era5_updater.py) concurrently polls **MET Norway Locationforecast (`api.met.no`)** (extrapolated from `10 m` to `100 m` using `POWER_LAW_OFFSHORE_ALPHA = 0.11`) and **DWD ICON-Seamless (`icon_seamless`)** to attach `secondary_nwp_ws100`. [consensus.py](../borssele-digital-twin/backend/app/consensus.py) uses `secondary_nwp_ws100` directly when available, and otherwise blends `synoptic_nwp_ws_h` with time-decaying $t_0$ persistence ($\beta_h = 0.20\,e^{-h/6}$):
 
 $$
 \widehat{W}_{\text{NWP, sec}}(t+h) =
 \begin{cases}
 \text{secondary\_nwp\_ws100}(t+h) & \text{if } \text{secondary\_nwp\_ws100}(t+h) \text{ is available,} \\[4pt]
-0.80\,\text{synoptic\_nwp\_ws}_h(t) + 0.20\,W_{100}(t) & \text{otherwise (offline / secondary outage).}
+(1 - \beta_h)\,\text{synoptic\_nwp\_ws}_h(t) + \beta_h\,W_{100}(t), \quad \beta_h = 0.20\,e^{-h/6} & \text{otherwise (offline / secondary outage).}
 \end{cases}
 $$
 
@@ -115,4 +115,4 @@ $$
 S_h = \max\!\left(\widehat{W}_{v2}, \widehat{W}_{v1}, \widehat{W}_{\text{NWP, sec}}\right) - \min\!\left(\widehat{W}_{v2}, \widehat{W}_{v1}, \widehat{W}_{\text{NWP, sec}}\right), \qquad C_h = \max\!\left(0,\; 1 - \frac{S_h}{\max(\widehat{W}_{\text{ens}}, 6.0)}\right)
 $$
 
-   Window-level `consensus_agreement_pct` averages $100 \cdot C_h$ across the queried $H$-hour window, while each hourly step also logs `consensus_met = (S_h <= 2.0)` (`CONSENSUS_THRESHOLD_MS = 2.0 m/s`). Automatic fallback (`AUTO_FALLBACK_HIGH_WIND_CONSENSUS_DIVERGENCE`) triggers whenever $\max(\widehat{W}_{\text{ens}}, \widehat{W}_{\text{NWP, sec}}) \ge 20.0\text{ m/s}$ in the window with `consensus_agreement_pct < 70.0%`, and `AUTO_FALLBACK_ML_MODELS_UNAVAILABLE` triggers whenever `(len(MODELS_V2) < 24) or (len(MODELS_V1) == 0)`.
+   Window-level `consensus_agreement_pct` averages $100 \cdot C_h$ across the queried $H$-hour window, while each hourly step also logs `consensus_met = (S_h <= 2.0)` (`CONSENSUS_THRESHOLD_MS = 2.0 m/s`). Automatic fallback triggers whenever `is_live_mode and not primary_sync_ok` (`AUTO_FALLBACK_PRIMARY_STREAM_LOSS`), whenever `(len(MODELS_V2) < 24) or (len(MODELS_V1) == 0)` (`AUTO_FALLBACK_ML_MODELS_UNAVAILABLE`), or whenever $\max(\widehat{W}_{\text{ens}}, \widehat{W}_{\text{NWP, sec}}) \ge 20.0\text{ m/s}$ in the window with `consensus_agreement_pct < 70.0%` (`AUTO_FALLBACK_HIGH_WIND_CONSENSUS_DIVERGENCE`).

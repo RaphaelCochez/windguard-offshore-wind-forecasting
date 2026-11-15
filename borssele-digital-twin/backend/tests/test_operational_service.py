@@ -101,6 +101,19 @@ class TestOperationalService(unittest.TestCase):
                     self.assertEqual(wm["cutout_hours"], 0, f"{sys_mode} false shutdown at {ts}")
                 self.assertEqual(len(res["forecast"]), 24)
 
+    def test_unseen_2020_ciara_out_of_sample_cutout(self):
+        for sys_mode in ("normal", "degraded_fallback"):
+            res = main.get_prediction(
+                main.ForecastRequest(
+                    timestamp="2020-02-09 18:00:00",
+                    area_id="borssele",
+                    horizon_hours=24,
+                    system_mode=sys_mode,
+                )
+            )
+            self.assertGreaterEqual(res["window_metrics"]["cutout_hours"], 3)
+            self.assertEqual(len(res["forecast"]), 24)
+
     def test_auto_fallback_on_primary_stream_outage(self):
         res = main.get_prediction(
             main.ForecastRequest(

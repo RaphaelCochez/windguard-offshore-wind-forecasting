@@ -19,3 +19,7 @@ borssele-digital-twin/backend/static/
 .DS_Store
 *.swp
 Space_Technologies_One-Page_Proposal.pdf
+
+# Runtime NWP / CDS sync caches (keep df26.csv tracked)
+borssele-digital-twin/backend/data/era5_*.csv
+borssele-digital-twin/backend/data/cds_*.nc
