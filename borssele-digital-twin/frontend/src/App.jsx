@@ -1,11 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ReferenceLine
-} from 'recharts';
-import {
-  Wind, RefreshCw, AlertTriangle, Activity, Clock, ShieldCheck, ShieldAlert, MapPin, CheckCircle2, Layers, Calendar
-} from 'lucide-react';
-import CoverageMap, { evaluateOperabilityClient } from './components/CoverageMap';
+import { AlertTriangle } from 'lucide-react';
+import CoverageMap from './components/CoverageMap';
+import ControlsHeader from './components/ControlsHeader';
+import OperationalSummary from './components/OperationalSummary';
+import ForecastChart from './components/ForecastChart';
 
 const AREA_OPTIONS = [
   { id: 'borssele', label: 'Borssele Corridor (NL • 51.72°N, 3.00°E)' },
@@ -21,10 +19,11 @@ const SCENARIO_OPTIONS = [
   { id: 'eunice_shutdown', label: 'Historical Event 1: Storm Eunice (2022-02-18 • 31.3 m/s Cut-Out Shut-Down)', ts: '2022-02-18 06:00:00', sysMode: 'normal', area: 'borssele' },
   { id: 'ciaran_shutdown', label: 'Historical Event 2: Storm Ciarán (2023-11-02 • 32.6 m/s Cut-Out Shut-Down)', ts: '2023-11-02 00:00:00', sysMode: 'normal', area: 'borssele' },
   { id: 'event_3', label: 'Historical Event 3: New Year Gale (2025-01-01 • 24.5 m/s High Wind Caution)', ts: '2025-01-01 06:00:00', sysMode: 'normal', area: 'borssele' },
+  { id: 'ciara_2020_oos', label: 'Historical Event 4: Storm Ciara (2020-02-09 • Out-of-Sample Cut-Out)', ts: '2020-02-09 18:00:00', sysMode: 'normal', area: 'borssele' },
   { id: 'custom_datetime', label: 'Custom Date & Hour Selection (Year / Month / Day / Hour)', ts: 'CUSTOM', sysMode: 'normal' },
 ];
 
-const YEAR_OPTIONS = ['2022', '2023', '2024', '2025', '2026'];
+const YEAR_OPTIONS = ['2020', '2021', '2022', '2023', '2024', '2025', '2026'];
 const MONTH_OPTIONS = [
   { val: '01', label: '01 (Jan)' },
   { val: '02', label: '02 (Feb)' },
@@ -283,198 +282,35 @@ export default function BorsseleDigitalTwin() {
       <div className="max-w-7xl mx-auto space-y-7">
 
         {/* 1. COMPACT HEADER & UNIFIED CONTROL MENU */}
-        <header className="bg-slate-900/90 backdrop-blur p-6 rounded-2xl border border-slate-800 shadow-xl space-y-5">
-          <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
-            <div>
-              <div className="flex flex-wrap items-center gap-2 text-cyan-400 font-semibold text-xs uppercase tracking-wider">
-                <Wind className="w-4 h-4 animate-spin shrink-0" />
-                <span>Copernicus C3S ERA5 &amp; NWP • Max Forecast Horizon: +24h</span>
-              </div>
-              <h1 className="text-2xl font-black text-white mt-1 tracking-tight">
-                Offshore Wind Park Shut-Down Prediction Service
-              </h1>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2.5 bg-slate-950/90 border border-slate-800 rounded-xl px-4 py-2.5 text-xs font-mono shrink-0">
-              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-cyan-400' : 'text-emerald-400'}`} />
-              <span className="text-emerald-400 font-bold">Auto-Sync Active</span>
-              <span className="text-slate-500">•</span>
-              <span className="text-slate-300">
-                t₀: {resolvedTimestamp ? formatDisplayTimestamp(resolvedTimestamp, tzMode, localTzLabel, true) : 'Syncing...'}
-              </span>
-              <div className="inline-flex rounded-lg border border-slate-700 overflow-hidden ml-1">
-                <button
-                  type="button"
-                  onClick={() => handleToggleTzMode('local')}
-                  className={`px-2 py-0.5 text-[11px] font-bold transition ${
-                    tzMode === 'local' ? 'bg-cyan-500 text-slate-950' : 'bg-slate-900 text-slate-400 hover:text-white'
-                  }`}
-                >
-                  {localTzLabel}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleToggleTzMode('utc')}
-                  className={`px-2 py-0.5 text-[11px] font-bold transition ${
-                    tzMode === 'utc' ? 'bg-cyan-500 text-slate-950' : 'bg-slate-900 text-slate-400 hover:text-white'
-                  }`}
-                >
-                  UTC
-                </button>
-              </div>
-              {lastAutoRefresh && (
-                <>
-                  <span className="text-slate-500">•</span>
-                  <span className="text-slate-400">Updated {lastAutoRefresh}</span>
-                </>
-              )}
-            </div>
-          </div>
-
-          {/* Unified Menu: Corridor + Horizon (+1h, +6h, +12h, +24h) + Scenario/Mode */}
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-4 pt-4 border-t border-slate-800/80 items-end">
-            <div className="md:col-span-5 space-y-1.5">
-              <label className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                <MapPin className="w-3.5 h-3.5 text-emerald-400" />
-                Offshore Wind Corridor (Area)
-              </label>
-              <select
-                value={selectedAreaId}
-                onChange={(e) => handleAreaChange(e.target.value)}
-                className="w-full bg-slate-950 text-white text-xs sm:text-sm font-mono font-semibold px-3.5 py-2.5 rounded-xl border border-slate-700 focus:border-cyan-500 focus:outline-none"
-              >
-                {AREA_OPTIONS.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="md:col-span-3 space-y-1.5">
-              <label className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                <Clock className="w-3.5 h-3.5 text-cyan-400" />
-                Prediction Horizon (Max +24h)
-              </label>
-              <div className="grid grid-cols-4 bg-slate-950 p-1 rounded-xl border border-slate-700">
-                {[1, 6, 12, 24].map((h) => (
-                  <button
-                    key={h}
-                    onClick={() => setHorizonHours(h)}
-                    className={`py-1.5 rounded-lg text-xs font-mono font-bold transition ${
-                      horizonHours === h
-                        ? 'bg-cyan-500 text-slate-950 shadow'
-                        : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    +{h}h
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="md:col-span-4 space-y-1.5">
-              <label className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                <Layers className="w-3.5 h-3.5 text-cyan-400" />
-                Operational Mode / Historical Event
-              </label>
-              <select
-                value={scenarioId}
-                onChange={(e) => handleScenarioChange(e.target.value)}
-                className="w-full bg-slate-950 text-cyan-300 text-xs sm:text-sm font-mono font-semibold px-3.5 py-2.5 rounded-xl border border-slate-700 focus:border-cyan-500 focus:outline-none"
-              >
-                {SCENARIO_OPTIONS.map((sc) => (
-                  <option key={sc.id} value={sc.id}>
-                    {sc.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {/* Date & Hour (Year / Month / Day / Hour) Menu — Strictly capped at current date & hour */}
-          <div className="pt-4 border-t border-slate-800/80 flex flex-col lg:flex-row items-stretch lg:items-end justify-between gap-4">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 flex-1">
-              <div className="space-y-1">
-                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
-                  <Calendar className="w-3 h-3 text-cyan-400" />
-                  Year
-                </label>
-                <select
-                  value={clampedYear}
-                  onChange={(e) => handleDatePartChange('year', e.target.value)}
-                  className="w-full bg-slate-950 text-white text-xs sm:text-sm font-mono font-semibold px-3 py-2 rounded-xl border border-slate-700 focus:border-cyan-500 focus:outline-none"
-                >
-                  {availableYears.map((y) => (
-                    <option key={y} value={y}>{y}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                  Month
-                </label>
-                <select
-                  value={clampedMonth}
-                  onChange={(e) => handleDatePartChange('month', e.target.value)}
-                  className="w-full bg-slate-950 text-white text-xs sm:text-sm font-mono font-semibold px-3 py-2 rounded-xl border border-slate-700 focus:border-cyan-500 focus:outline-none"
-                >
-                  {availableMonths.map((m) => (
-                    <option key={m.val} value={m.val}>{m.label}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                  Day
-                </label>
-                <select
-                  value={clampedDay}
-                  onChange={(e) => handleDatePartChange('day', e.target.value)}
-                  className="w-full bg-slate-950 text-white text-xs sm:text-sm font-mono font-semibold px-3 py-2 rounded-xl border border-slate-700 focus:border-cyan-500 focus:outline-none"
-                >
-                  {Array.from({ length: maxAllowedDay }, (_, i) => String(i + 1).padStart(2, '0')).map((d) => (
-                    <option key={d} value={d}>{d}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                  Hour ({tzMode === 'utc' ? 'UTC' : localTzLabel} • Max Now)
-                </label>
-                <select
-                  value={clampedHour}
-                  onChange={(e) => handleDatePartChange('hour', e.target.value)}
-                  className="w-full bg-slate-950 text-cyan-300 text-xs sm:text-sm font-mono font-semibold px-3 py-2 rounded-xl border border-slate-700 focus:border-cyan-500 focus:outline-none"
-                >
-                  {availableHours.map((hr) => (
-                    <option key={hr} value={hr}>{hr}:00 {tzMode === 'utc' ? 'UTC' : localTzLabel}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2.5 shrink-0">
-              <button
-                onClick={handleApplyDateClick}
-                className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-mono font-bold text-xs transition shadow"
-              >
-                Predict {clampedYear}-{clampedMonth}-{clampedDay} {clampedHour}:00 {tzMode === 'utc' ? 'UTC' : localTzLabel}
-              </button>
-              {effectiveTimestamp !== 'LIVE' && (
-                <button
-                  onClick={() => setScenarioId('live_normal')}
-                  className="px-3.5 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-emerald-700/60 font-mono font-bold text-xs transition"
-                >
-                  Live Now
-                </button>
-              )}
-            </div>
-          </div>
-        </header>
+        <ControlsHeader
+          loading={loading}
+          resolvedTimestamp={resolvedTimestamp}
+          tzMode={tzMode}
+          localTzLabel={localTzLabel}
+          handleToggleTzMode={handleToggleTzMode}
+          lastAutoRefresh={lastAutoRefresh}
+          selectedAreaId={selectedAreaId}
+          handleAreaChange={handleAreaChange}
+          areaOptions={AREA_OPTIONS}
+          horizonHours={horizonHours}
+          setHorizonHours={setHorizonHours}
+          scenarioId={scenarioId}
+          handleScenarioChange={handleScenarioChange}
+          scenarioOptions={SCENARIO_OPTIONS}
+          clampedYear={clampedYear}
+          clampedMonth={clampedMonth}
+          clampedDay={clampedDay}
+          clampedHour={clampedHour}
+          availableYears={availableYears}
+          availableMonths={availableMonths}
+          maxAllowedDay={maxAllowedDay}
+          availableHours={availableHours}
+          handleDatePartChange={handleDatePartChange}
+          handleApplyDateClick={handleApplyDateClick}
+          effectiveTimestamp={effectiveTimestamp}
+          setScenarioId={setScenarioId}
+          formatDisplayTimestamp={formatDisplayTimestamp}
+        />
 
         {error && (
           <div className="bg-red-950/50 border border-red-800/80 text-red-300 px-5 py-3.5 rounded-xl flex items-center gap-3 text-sm">
@@ -484,69 +320,17 @@ export default function BorsseleDigitalTwin() {
         )}
 
         {/* 2. INTERACTIVE HORIZON SUMMARY CARDS (+1h, +6h, +12h, +24h) */}
-        <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-          {[1, 6, 12, 24].map((h) => {
-            const snap = horizonSnapshots[`+${h}h`];
-            const isSelected = horizonHours === h;
-            const opInfo = snap ? evaluateOperabilityClient(snap.predicted) : null;
-
-            return (
-              <div
-                key={h}
-                onClick={() => setHorizonHours(h)}
-                className={`cursor-pointer rounded-2xl p-5 border transition-all ${
-                  isSelected
-                    ? 'bg-slate-900 border-cyan-500 shadow-lg shadow-cyan-950/40 ring-1 ring-cyan-500/50'
-                    : 'bg-slate-900/70 border-slate-800 hover:border-slate-700'
-                }`}
-              >
-                <div className="flex justify-between items-center mb-3">
-                  <span
-                    className={`text-xs font-mono font-bold px-2.5 py-0.5 rounded-md ${
-                      isSelected ? 'bg-cyan-500 text-slate-950' : 'bg-slate-800 text-cyan-300'
-                    }`}
-                  >
-                    +{h}h {h === 24 ? '• Max Horizon' : 'Forecast'}
-                  </span>
-                  <span className="text-xs font-mono text-slate-400">
-                    {snap ? formatDisplayTimestamp(snap.timestamp, tzMode, localTzLabel, false) : '--'}
-                  </span>
-                </div>
-
-                {snap && opInfo ? (
-                  <div className="space-y-3">
-                    <div
-                      className={`inline-flex items-center gap-1.5 text-xs font-mono font-bold px-3 py-1.5 rounded-xl border w-full justify-center ${opInfo.badgeClass}`}
-                    >
-                      {opInfo.canOperate ? (
-                        <ShieldCheck className="w-4 h-4 shrink-0" />
-                      ) : (
-                        <ShieldAlert className="w-4 h-4 shrink-0" />
-                      )}
-                      <span>{opInfo.shortLabel}</span>
-                    </div>
-
-                    <div className="flex items-baseline justify-between">
-                      <div className="text-2xl font-mono font-black text-white">
-                        {snap.predicted} <span className="text-xs font-normal text-cyan-400">m/s</span>
-                      </div>
-                      <div className="text-xs font-mono text-slate-400">
-                        Margin: <strong className="text-slate-200">{snap.marginToCutOut} m/s</strong>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="py-4 text-xs font-mono text-slate-500">Syncing +{h}h...</div>
-                )}
-              </div>
-            );
-          })}
-        </section>
+        <OperationalSummary
+          horizonSnapshots={horizonSnapshots}
+          horizonHours={horizonHours}
+          setHorizonHours={setHorizonHours}
+          tzMode={tzMode}
+          localTzLabel={localTzLabel}
+          formatDisplayTimestamp={formatDisplayTimestamp}
+        />
 
         {/* 3. MAIN WORKSPACE: COVERAGE MAP (LEFT) + UNIFIED FORECAST & THRESHOLD CHART (RIGHT) */}
         <section className="grid grid-cols-1 lg:grid-cols-12 gap-7 items-stretch">
-
-          {/* Left: Interactive Area Coverage Map & Wind Compass */}
           <div className="lg:col-span-6">
             <CoverageMap
               area={activeAreaObj}
@@ -556,132 +340,17 @@ export default function BorsseleDigitalTwin() {
             />
           </div>
 
-          {/* Right: Single Unified Forecast & Shut-Down Threshold Chart + Grid Operator Decision */}
-          <div className="lg:col-span-6 bg-slate-900/85 backdrop-blur p-6 rounded-2xl border border-slate-800 shadow-xl flex flex-col justify-between">
-            <div>
-              <div className="flex flex-wrap justify-between items-center gap-2 mb-4">
-                <div>
-                  <h2 className="text-base font-bold text-white flex items-center gap-2">
-                    <Activity className="w-4 h-4 text-cyan-400" />
-                    <span>+{horizonHours}h Wind Forecast &amp; Shut-Down Thresholds — {areaTitle}</span>
-                  </h2>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    <span className="text-cyan-400 font-semibold">&lt; 3 m/s: Low Wind</span> •{' '}
-                    <span className="text-emerald-400 font-semibold">3–20 m/s: Good Conditions</span> •{' '}
-                    <span className="text-amber-400 font-semibold">20–25 m/s: High Wind Caution</span> •{' '}
-                    <span className="text-red-400 font-semibold">≥ 25 m/s: Cut-Out Shut-Down</span>
-                  </p>
-                </div>
-
-                {windowMetrics && windowMetrics.rmse_active !== null && (
-                  <span className="text-xs font-mono bg-slate-950 border border-slate-800 px-3 py-1 rounded-lg text-slate-300">
-                    Wind Accuracy: <strong className="text-emerald-400">{windowMetrics.operability_accuracy_pct}%</strong> • MAE:{' '}
-                    <strong className="text-amber-300">{windowMetrics.mae_active} m/s</strong> • RMSE:{' '}
-                    <strong className="text-cyan-300">{windowMetrics.rmse_active} m/s</strong>
-                  </span>
-                )}
-              </div>
-
-              <div className="h-[340px] w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={forecastData} margin={{ top: 10, right: 20, left: -10, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                    <XAxis dataKey="horizon" stroke="#64748b" fontSize={11} />
-                    <YAxis stroke="#64748b" fontSize={11} unit=" m/s" domain={[0, 35]} />
-                    <Tooltip
-                      labelFormatter={(label, payload) => {
-                        const ts = payload?.[0]?.payload?.timestamp;
-                        return ts ? `${label} • ${formatDisplayTimestamp(ts, tzMode, localTzLabel, false)}` : label;
-                      }}
-                      contentStyle={{
-                        backgroundColor: '#0f172a',
-                        borderColor: '#334155',
-                        borderRadius: '12px',
-                        color: '#fff',
-                      }}
-                    />
-                    <Legend />
-                    <ReferenceLine
-                      y={25.0}
-                      stroke="#ef4444"
-                      strokeWidth={2}
-                      strokeDasharray="5 5"
-                      label={{ value: 'Cut-Out Shut-Down (>25 m/s)', fill: '#f87171', fontSize: 10, position: 'insideTopRight' }}
-                    />
-                    <ReferenceLine
-                      y={20.0}
-                      stroke="#f59e0b"
-                      strokeWidth={1.5}
-                      strokeDasharray="3 3"
-                      label={{ value: 'High Wind Caution (20–25 m/s)', fill: '#fbbf24', fontSize: 10, position: 'insideTopLeft' }}
-                    />
-                    <ReferenceLine
-                      y={3.0}
-                      stroke="#10b981"
-                      strokeWidth={1.2}
-                      strokeDasharray="2 4"
-                      label={{ value: 'Good Conditions (3–20 m/s) | Low Wind (<3 m/s)', fill: '#6ee7b7', fontSize: 10, position: 'insideBottomRight' }}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="predicted"
-                      name="Predicted 100m Wind (m/s)"
-                      stroke="#06b6d4"
-                      strokeWidth={3}
-                      dot={horizonHours <= 6}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="actual"
-                      name={isLiveMode ? 'Secondary NWP Reference (m/s)' : 'ERA5 Verification Truth (m/s)'}
-                      stroke="#10b981"
-                      strokeWidth={2}
-                      strokeDasharray="4 4"
-                      dot={horizonHours <= 6}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
-            {/* Concise Grid Operator Decision & Proposal Performance Criteria Footer */}
-            {proposalTelemetry && (
-              <div className="mt-4 pt-3 border-t border-slate-800/80 bg-slate-950/70 rounded-xl p-3.5 border border-slate-800/80 space-y-2">
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
-                  <span className="text-cyan-400 font-bold flex items-center gap-1.5">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                    Grid Operator Decision (+{horizonHours}h Window)
-                  </span>
-                  <span className="text-emerald-400">
-                    {windowMetrics ? `${windowMetrics.operable_hours}/${horizonHours}h Operable` : ''} • Consensus:{' '}
-                    {proposalTelemetry.consensus_agreement_pct}%
-                  </span>
-                </div>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  {proposalTelemetry.grid_operator_strategy}
-                </p>
-                <div className="pt-1.5 border-t border-slate-800/70 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] font-mono text-slate-400">
-                  <span>
-                    Mode:{' '}
-                    <strong className={proposalTelemetry.auto_fallback_triggered ? 'text-amber-300' : 'text-slate-200'}>
-                      {proposalTelemetry.system_mode}
-                    </strong>
-                  </span>
-                  <span>
-                    Freshness: <strong className="text-emerald-400">{proposalTelemetry.data_freshness}</strong> • Cycle:{' '}
-                    <strong className="text-slate-200">1h</strong>
-                  </span>
-                  <span>
-                    Latency: <strong className="text-cyan-300">{proposalTelemetry.detection_to_alert_latency_ms} ms</strong> • Fallback:{' '}
-                    <strong className={proposalTelemetry.fallback_status?.startsWith('ACTIVE') ? 'text-amber-300' : 'text-emerald-400'}>
-                      {proposalTelemetry.fallback_status}
-                    </strong>
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
-
+          <ForecastChart
+            horizonHours={horizonHours}
+            areaTitle={areaTitle}
+            windowMetrics={windowMetrics}
+            forecastData={forecastData}
+            isLiveMode={isLiveMode}
+            proposalTelemetry={proposalTelemetry}
+            tzMode={tzMode}
+            localTzLabel={localTzLabel}
+            formatDisplayTimestamp={formatDisplayTimestamp}
+          />
         </section>
 
       </div>

@@ -15,12 +15,10 @@ from datetime import datetime, timezone
 from app.config import (
     SERVICE_TITLE,
     OPERATIONAL_QUESTION,
-    CAUTION_SPEED_MS,
     SUPPORTED_HORIZONS,
     DEFAULT_HORIZON_HOURS,
     MAX_HORIZON_HOURS,
     CONSENSUS_THRESHOLD_MS,
-    MIN_CONSENSUS_AGREEMENT_PCT,
     BACKGROUND_SYNC_INTERVAL_SECONDS,
 )
 from app.feature_engineering import (
@@ -30,6 +28,11 @@ from app.feature_engineering import (
     V2_FEATURE_COLS,
 )
 from app.physics_engine import evaluate_turbine_operability
+from app.consensus import (
+    compute_secondary_fallback_and_consensus,
+    evaluate_fallback_state,
+    build_grid_strategy_and_telemetry,
+)
 from app.era5_updater import (
     OFFSHORE_AREAS,
     fetch_updated_era5_for_area,
@@ -81,7 +84,7 @@ async def _background_era5_sync_loop():
         await asyncio.sleep(BACKGROUND_SYNC_STATE["interval_seconds"])
 
 
-# Three Historical North Sea Storm & Shut-Down Events
+# Four Historical North Sea Storm & Shut-Down Events
 HISTORICAL_EVENTS = [
     {
         "id": "storm_eunice_shutdown",
@@ -103,6 +106,13 @@ HISTORICAL_EVENTS = [
         "timestamp": "2025-01-01 06:00:00",
         "area_id": "borssele",
         "description": "Near-threshold severe gale peaking at 24.52 m/s (0.48 m/s below the 25.0 m/s cut-out limit) — verifies High Wind Caution without false shut-down.",
+    },
+    {
+        "id": "ciara_2020_oos",
+        "title": "Historical Event 4: Storm Ciara (2020-02-09 • Out-of-Sample Cut-Out)",
+        "timestamp": "2020-02-09 18:00:00",
+        "area_id": "borssele",
+        "description": "Strictly out-of-sample Feb 2020 extratropical cyclone (3h >= 25.0 m/s in window, peaking at 30.28 m/s on Feb 10) — verifies unseen cut-out generalization.",
     },
 ]
 
@@ -342,7 +352,10 @@ def get_prediction(req: ForecastRequest):
         future_idx = current_idx + h
         sec_ext_ws: Optional[float] = None
 
-        if future_idx < len(active_df):
+        if (
+            future_idx < len(active_df)
+            and (pd.to_datetime(active_df.loc[future_idx, "valid_time"]) - target_dt) == pd.Timedelta(hours=h)
+        ):
             u_act = float(active_df.loc[future_idx, "u100"])
             v_act = float(active_df.loc[future_idx, "v100"])
             era5_or_primary_ws = float(np.sqrt(u_act**2 + v_act**2))
@@ -376,21 +389,18 @@ def get_prediction(req: ForecastRequest):
         else:
             pred_v2 = pred_v1
 
-        w_v2 = ENSEMBLE_WEIGHTS.get(h, 0.95)
+        w_v2 = ENSEMBLE_WEIGHTS.get(h, 1.0)
         pred_ens = float(np.clip(w_v2 * pred_v2 + (1.0 - w_v2) * pred_v1, 0.0, 45.0))
 
-        # Secondary NWP stream: prefer independent MET Norway / DWD ICON in live mode when available
-        nwp_secondary = (
-            sec_ext_ws
-            if sec_ext_ws is not None
-            else float(0.80 * nwp_synoptic_h + 0.20 * pred_pers)
-        )
-
-        # Conservative safety envelope whenever winds enter Caution (>=20 m/s) during degraded fallback
-        pred_fallback = float(
-            max(nwp_secondary, pred_ens)
-            if max(nwp_secondary, pred_ens) >= CAUTION_SPEED_MS
-            else nwp_secondary
+        # Secondary NWP stream, conservative fallback envelope & inter-source spread
+        fb_metrics = compute_secondary_fallback_and_consensus(
+            pred_ens=pred_ens,
+            pred_v2=pred_v2,
+            pred_v1=pred_v1,
+            pred_pers=pred_pers,
+            nwp_synoptic_h=nwp_synoptic_h,
+            sec_ext_ws=sec_ext_ws,
+            step=h,
         )
 
         # Reference curve for chart & accuracy: real independent secondary NWP in live mode (if fetched),
@@ -401,10 +411,6 @@ def get_prediction(req: ForecastRequest):
             else era5_or_primary_ws
         )
 
-        source_spread = float(
-            max(pred_v2, pred_v1, nwp_secondary) - min(pred_v2, pred_v1, nwp_secondary)
-        )
-        consensus_score_h = float(max(0.0, 1.0 - (source_spread / max(pred_ens, 6.0))))
         raw_24h.append({
             "step": h,
             "horizon": f"+{h}h",
@@ -412,52 +418,30 @@ def get_prediction(req: ForecastRequest):
             "pred_ens": pred_ens,
             "pred_v2": pred_v2,
             "pred_v1": pred_v1,
-            "pred_fallback": pred_fallback,
+            "pred_fallback": fb_metrics["pred_fallback"],
             "pred_pers": pred_pers,
-            "nwp_secondary": nwp_secondary,
+            "nwp_secondary": fb_metrics["nwp_secondary"],
             "ref_ws": ref_ws,
-            "source_spread": source_spread,
-            "consensus_score_h": consensus_score_h,
+            "source_spread": fb_metrics["source_spread"],
+            "consensus_score_h": fb_metrics["consensus_score_h"],
         })
 
     # Automatic Safe Fallback Detection (per Box 9: Failure and Safe Fallback)
     missing_ml_models = (len(MODELS_V2) < MAX_HORIZON_HOURS) or (len(MODELS_V1) == 0)
-    primary_stream_lost = is_live_mode and not bool(sync_meta.get("primary_sync_ok", True))
-
-    prelim_window = raw_24h[:horizon_hours]
-    prelim_consensus_pct = float(np.mean([r["consensus_score_h"] * 100.0 for r in prelim_window]))
-    high_wind_present = any(
-        max(r["pred_ens"], r["nwp_secondary"]) >= CAUTION_SPEED_MS for r in prelim_window
-    )
-    consensus_breach = high_wind_present and (prelim_consensus_pct < MIN_CONSENSUS_AGREEMENT_PCT)
-
-    manual_fallback = (requested_sys_mode == "degraded_fallback") or (requested_mode == "fallback_nwp")
-
-    if manual_fallback:
-        is_fallback_active = True
-        auto_fallback_triggered = False
-        fallback_trigger_reason = "MANUAL_OPERATOR_SAFE_FALLBACK"
-    elif primary_stream_lost:
-        is_fallback_active = True
-        auto_fallback_triggered = True
-        fallback_trigger_reason = "AUTO_FALLBACK_PRIMARY_STREAM_LOSS"
-    elif missing_ml_models:
-        is_fallback_active = True
-        auto_fallback_triggered = True
-        fallback_trigger_reason = "AUTO_FALLBACK_ML_MODELS_UNAVAILABLE"
-    elif consensus_breach:
-        is_fallback_active = True
-        auto_fallback_triggered = True
-        fallback_trigger_reason = "AUTO_FALLBACK_HIGH_WIND_CONSENSUS_DIVERGENCE"
-    else:
-        is_fallback_active = False
-        auto_fallback_triggered = False
-        fallback_trigger_reason = "NONE (Nominal Multi-Source Consensus)"
-
-    effective_system_mode = (
-        "auto_degraded_fallback"
-        if auto_fallback_triggered
-        else ("degraded_fallback" if is_fallback_active else "normal")
+    (
+        is_fallback_active,
+        auto_fallback_triggered,
+        fallback_trigger_reason,
+        effective_system_mode,
+        primary_stream_lost,
+    ) = evaluate_fallback_state(
+        raw_24h=raw_24h,
+        horizon_hours=horizon_hours,
+        is_live_mode=is_live_mode,
+        sync_meta=sync_meta,
+        missing_ml_models=missing_ml_models,
+        requested_sys_mode=requested_sys_mode,
+        requested_mode=requested_mode,
     )
 
     full_24h: List[Dict[str, Any]] = []
@@ -571,74 +555,20 @@ def get_prediction(req: ForecastRequest):
             "min_predicted_ws_ms": min_pred_ws,
         }
 
-    # Grid Operator Decision Support & Safe Fallback Assessment
-    ref_label = "Secondary NWP" if is_live_mode else "ERA5 Reference"
-    if window_metrics["cutout_hours"] > 0:
-        alert_level = "CRITICAL_SHUTDOWN_ALERT"
-        grid_strategy = (
-            f"VERIFIED CUT-OUT SHUT-DOWN: Forecast predicts {window_metrics['cutout_hours']}h >= 25.0 m/s (peak {max_pred_ws} m/s) "
-            f"vs. {ref_label} {window_metrics['actualcutout_hours']}h >= 25.0 m/s (peak {window_metrics['max_actual_ws_ms']} m/s). "
-            "Wind park closed via automatic 90° blade pitch feathering; activate HVDC spinning reserves."
-        )
-    elif window_metrics["caution_hours"] > 0:
-        alert_level = "HIGH_WIND_CAUTION_ALERT"
-        grid_strategy = (
-            f"HIGH WIND CAUTION ({window_metrics['caution_hours']}h between 20.0–25.0 m/s, min margin {window_metrics['min_cutout_margin_ms']} m/s). "
-            "Place secondary NWP consensus watch on standby and pre-allocate short-term balancing reserves."
-        )
-    elif window_metrics["below_cutin_hours"] > 0:
-        alert_level = "LOW_WIND_STANDBY"
-        grid_strategy = (
-            f"LOW WIND (<3.0 m/s for {window_metrics['below_cutin_hours']}h within +{horizon_hours}h). "
-            "Wind park can operate safely (no storm shut-down risk), but calm wind is below the 3.0 m/s turbine cut-in threshold."
-        )
-    else:
-        alert_level = "GOOD_CONDITIONS"
-        grid_strategy = (
-            f"GOOD CONDITIONS: All {horizon_hours}h within 3.0–20.0 m/s operating range (peak {max_pred_ws} m/s). "
-            "Maintain standard grid dispatch and routine 1h ERA5/NWP verification cycle."
-        )
-
     latency_ms = round((time.perf_counter() - t_start) * 1000.0, 2)
-
-    sec_sources = sync_meta.get("secondary_sources") or ["Synoptic NWP Guidance"]
-    system_mode_label = (
-        f"AUTO SAFE FALLBACK ({fallback_trigger_reason})"
-        if auto_fallback_triggered
-        else (
-            "MANUAL SAFE FALLBACK (Secondary NWP Active)"
-            if is_fallback_active
-            else "NORMAL (Primary ERA5/NWP + LightGBM Ensemble)"
-        )
+    proposal_telemetry = build_grid_strategy_and_telemetry(
+        window_metrics=window_metrics,
+        horizon_hours=horizon_hours,
+        max_pred_ws=max_pred_ws,
+        is_live_mode=is_live_mode,
+        sync_meta=sync_meta,
+        primary_stream_lost=primary_stream_lost,
+        is_fallback_active=is_fallback_active,
+        auto_fallback_triggered=auto_fallback_triggered,
+        fallback_trigger_reason=fallback_trigger_reason,
+        consensus_rate=consensus_rate,
+        latency_ms=latency_ms,
     )
-
-    proposal_telemetry = {
-        "system_mode": system_mode_label,
-        "auto_fallback_triggered": auto_fallback_triggered,
-        "fallback_trigger_reason": fallback_trigger_reason,
-        "independent_nwp_sources": sec_sources,
-        "alert_level": alert_level,
-        "grid_operator_strategy": grid_strategy,
-        "detection_to_alert_latency_ms": latency_ms,
-        "update_interval": "1 hour (ERA5 / Multi-NWP Hourly Cycle)",
-        "data_freshness": (
-            "DEGRADED STREAM (Safe Fallback Cache + Secondary NWP)"
-            if primary_stream_lost
-            else ("LIVE SYNC (<1h lag)" if is_live_mode else "HISTORICAL EVENT REPLAY")
-        ),
-        "consensus_threshold_ms": CONSENSUS_THRESHOLD_MS,
-        "consensus_agreement_pct": consensus_rate,
-        "fallback_status": (
-            f"ACTIVE ({' + '.join(sec_sources)})"
-            if is_fallback_active
-            else "STANDBY (Auto-Triggers on Stream Loss / Divergence)"
-        ),
-        "notification_channels": [
-            {"channel": "Grid Control Room Dashboard", "status": "DELIVERED (Live UI)"},
-            {"channel": "SCADA Alert Payload Bus", "status": f"READY ({alert_level})"},
-            {"channel": "Multi-Source NWP Consensus Gate", "status": "PASS" if consensus_rate >= MIN_CONSENSUS_AGREEMENT_PCT else "REVIEW"},
-        ],
-    }
 
     current_op = evaluate_turbine_operability(current_ws)
 

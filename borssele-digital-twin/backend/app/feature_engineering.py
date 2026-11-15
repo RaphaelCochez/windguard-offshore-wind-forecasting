@@ -165,7 +165,7 @@ def build_era5_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # 7. Cyclic Time Features
     hour = dt_index.hour.values
-    day_of_year = dt_index.dayofyear.values
+    day_of_year = dt_index.day_of_year.values
     processed['hour_sin'] = np.sin(2.0 * np.pi * hour / 24.0)
     processed['hour_cos'] = np.cos(2.0 * np.pi * hour / 24.0)
     processed['doy_sin'] = np.sin(2.0 * np.pi * day_of_year / 365.25)
@@ -251,8 +251,8 @@ def attach_horizon_nwp_features_bulk(df_all: pd.DataFrame, h: int) -> pd.DataFra
 
     # Deterministic atmospheric phase-lag dispersion that grows with sqrt(h)
     phase_seed = (
-        np.sin(df_all.index.dayofyear.values * 0.73 + df_all.index.hour.values * 0.41 + h * 0.29)
-        + 0.5 * np.cos(df_all.index.dayofyear.values * 1.17 - h * 0.53)
+        np.sin(df_all.index.day_of_year.values * 0.73 + df_all.index.hour.values * 0.41 + h * 0.29)
+        + 0.5 * np.cos(df_all.index.day_of_year.values * 1.17 - h * 0.53)
     )
     sigma_h = 0.26 * np.sqrt(float(h))
     dispersion = sigma_h * phase_seed
@@ -292,7 +292,11 @@ def attach_horizon_nwp_features_single(
     msl_now = float(row_now["msl"])
 
     future_idx = current_idx + h
-    if future_idx < len(active_df):
+    is_contiguous_future = (
+        future_idx < len(active_df)
+        and (pd.to_datetime(active_df.loc[future_idx, "valid_time"]) - target_dt) == pd.Timedelta(hours=h)
+    )
+    if is_contiguous_future:
         if is_live_mode:
             # Live future rows are already genuine NWP forecasts from ECMWF/Open-Meteo
             win_start = max(0, future_idx - 1)
@@ -309,7 +313,7 @@ def attach_horizon_nwp_features_single(
             v_sm = float(sub["v100"].mean())
             ws_sm = float(np.mean(np.sqrt(sub["u100"] ** 2 + sub["v100"] ** 2)))
             msl_sm = float(sub["msl"].mean())
-            doy = target_dt.dayofyear
+            doy = target_dt.day_of_year
             hr = target_dt.hour
             phase_seed = float(np.sin(doy * 0.73 + hr * 0.41 + h * 0.29) + 0.5 * np.cos(doy * 1.17 - h * 0.53))
             dispersion = 0.26 * np.sqrt(float(h)) * phase_seed

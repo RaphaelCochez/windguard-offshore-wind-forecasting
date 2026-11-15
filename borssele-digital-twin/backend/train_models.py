@@ -84,9 +84,9 @@ def train_and_evaluate():
     v1_models = load_lightgbm_models(V1_DIR)
 
     # Chronological splits:
-    # Train: < 2026-01-01 (9,096h: Full Year 2025 [8,760h] + Feb 2022 Eunice [168h] + Oct-Nov 2023 Ciaran [168h])
+    # Train: 2022..2025 (9,096h: Full Year 2025 [8,760h] + Feb 2022 Eunice [168h] + Oct-Nov 2023 Ciaran [168h])
     # Val:   Jan 1, 2026 - Feb 14, 2026 (1,080h winter wind regime)
-    # Test:  Feb 15, 2026 - Jun 30, 2026 (3,240h valid contiguous hours; completely held-out test window)
+    # Test:  Feb 7-12, 2020 (120h unseen Storm Ciara, peak 30.28 m/s, >=25 m/s) + Feb 15 - Jun 29, 2026 (3,240h)
     V2_DIR.mkdir(parents=True, exist_ok=True)
 
     target_df = pd.DataFrame(
@@ -99,9 +99,9 @@ def train_and_evaluate():
     df_all = df_feat.loc[valid_rows].copy()
     targets_all = target_df.loc[valid_rows].copy()
 
-    train_mask = df_all.index < "2026-01-01"
+    train_mask = (df_all.index >= "2022-01-01") & (df_all.index < "2026-01-01")
     val_mask = (df_all.index >= "2026-01-01") & (df_all.index < "2026-02-15")
-    test_mask = df_all.index >= "2026-02-15"
+    test_mask = (df_all.index < "2022-01-01") | (df_all.index >= "2026-02-15")
 
     y_curr_train = df_all.loc[train_mask, "wind_speed_100m"].values
     y_curr_val = df_all.loc[val_mask, "wind_speed_100m"].values
